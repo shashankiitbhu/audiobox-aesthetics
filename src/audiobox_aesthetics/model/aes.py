@@ -184,36 +184,34 @@ class AesMultiOutput(
                 if self.encoder_type == "hubert":
                     # HuBERT path
                     outputs = self.encoder(wav, output_hidden_states=True)
-                    # Get all hidden states
-                    all_hidden_states = outputs.hidden_states  # Tuple of hidden states
+                    all_hidden_states = outputs.hidden_states
+                    transformer_layers = all_hidden_states[1:]  # Skip embedding
+                    all_outputs = [(h. transpose(0, 1), None) for h in transformer_layers]
                     
-                    # HuBERT structure:  (embedding_output, layer_1, layer_2, .. ., layer_12)
-                    # Skip embedding (index 0), take transformer layers (index 1-12)
-                    transformer_layers = all_hidden_states[1:]  # 12 layers
-                    
-                    # Convert to WavLM format:  list of (tensor, None)
-                    # HuBERT outputs [batch, time, 768], need [time, batch, 768]
-                    all_outputs = [(h.transpose(0, 1), None) for h in transformer_layers]
-                    
-                    # Match expected number of layers (self.nth_layer)
+                    # Match expected number of layers
                     num_available = len(all_outputs)
                     if num_available < self.nth_layer:
-                        # Pad by duplicating last layer
-                        print(f"⚠️  HuBERT has {num_available} layers, padding to {self.nth_layer}")
                         all_outputs = all_outputs + [all_outputs[-1]] * (self.nth_layer - num_available)
                     elif num_available > self.nth_layer:
-                        # Trim to requested number
                         all_outputs = all_outputs[:self.nth_layer]
                     
-                    # Downsample padding mask to match feature dimensions
+                    # Fix padding mask dimensions
+                    hubert_time_dim = transformer_layers[0].shape[1]
                     if padding_mask is not None and padding_mask.any():
-                        embed_padding_mask = padding_mask[: , :: 320]
-                    else:
+                        ratio = max(1, wav.shape[1] // hubert_time_dim)
+                        embed_padding_mask = padding_mask[:, ::ratio]
+                        
+                        if embed_padding_mask.shape[1] > hubert_time_dim:
+                            embed_padding_mask = embed_padding_mask[:, :hubert_time_dim]
+                        elif embed_padding_mask.shape[1] < hubert_time_dim:
+                            pad_len = hubert_time_dim - embed_padding_mask.shape[1]
+                            embed_padding_mask = torch.nn. functional.pad(
+                                embed_padding_mask, (0, pad_len), value=True
+                            )
+                    else: 
                         embed_padding_mask = torch.zeros(
-                            wav.shape[0], 
-                            transformer_layers[0].shape[1], 
-                            dtype=torch.bool, 
-                            device=wav. device
+                            wav.shape[0], hubert_time_dim, 
+                            dtype=torch.bool, device=wav.device
                         )
                 else:
                     # WavLM path (original)
