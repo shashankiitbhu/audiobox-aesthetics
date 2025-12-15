@@ -12,6 +12,7 @@ import torch
 
 from .utils import create_mlp_block
 from .wavlm import WavLM, WavLMConfig
+from transformers import HubertModel
 from huggingface_hub import PyTorchModelHubMixin
 
 logging = logging.getLogger(__name__)
@@ -92,12 +93,27 @@ class AesMultiOutput(
     output_dim: int = 1
     target_transform: Dict[str, Dict[str, float]] = None
     freeze_encoder: bool = True  # trf encoder freeze true means no weight update
-
+    use_hubert: bool = False 
+    
     def __post_init__(self):
         super().__init__()
         amodel_cfg = DEFAULT_AUDIO_CFG
-        self.wavlm_model = WavLM(amodel_cfg)
-        wavlm_out_dim = self.wavlm_model.cfg.encoder_embed_dim
+        
+        # Create encoder (WavLM or HuBERT)
+        if self.use_hubert:
+            print("🎵 Using HuBERT encoder")
+            self.encoder = HubertModel.from_pretrained("facebook/hubert-base-ls960")
+            self.encoder_type = "hubert"
+        else:
+            print("🎵 Using WavLM encoder")
+            self.encoder = WavLM(amodel_cfg)
+            self.encoder_type = "wavlm"
+        
+        # Set output dimension based on encoder type
+        if self.use_hubert:
+            wavlm_out_dim = self.encoder.config.hidden_size
+        else:
+            wavlm_out_dim = self.encoder.cfg.encoder_embed_dim
 
         self.axes_name = AXES_NAME
         self.proj_layer = nn.ModuleDict(
@@ -135,6 +151,12 @@ class AesMultiOutput(
             f"model precision: {self.precision}, enable autocast: {self.enable_autocast}",
         )
 
+        # After loading encoder (either HuBERT or WavLM)
+        if self.freeze_encoder:
+            self.encoder.eval()  # Set to evaluation mode
+            for param in self.encoder.parameters():
+                param.requires_grad = False
+
     def forward(self, batch):
         assert batch["wav"].ndim == 3
 
@@ -154,19 +176,55 @@ class AesMultiOutput(
             ),
             torch.set_grad_enabled(self.training),
         ):
-            if self.wavlm_model.cfg.normalize:
+            # Normalize wav (only for WavLM)
+            if self.encoder_type == "wavlm" and self.encoder.cfg.normalize:
                 wav = torch.nn.functional.layer_norm(wav, wav.shape)
 
             with torch.set_grad_enabled(self.training and not self.freeze_encoder):
-                (_, all_outputs), embed_padding_mask = (
-                    self.wavlm_model.extract_features(
-                        source=wav,
-                        padding_mask=padding_mask,
-                        output_layer=self.nth_layer,
-                        ret_layer_results=True,
+                if self.encoder_type == "hubert":
+                    # HuBERT path
+                    outputs = self.encoder(wav, output_hidden_states=True)
+                    # Get all hidden states
+                    all_hidden_states = outputs.hidden_states  # Tuple of hidden states
+                    
+                    # HuBERT structure:  (embedding_output, layer_1, layer_2, .. ., layer_12)
+                    # Skip embedding (index 0), take transformer layers (index 1-12)
+                    transformer_layers = all_hidden_states[1:]  # 12 layers
+                    
+                    # Convert to WavLM format:  list of (tensor, None)
+                    # HuBERT outputs [batch, time, 768], need [time, batch, 768]
+                    all_outputs = [(h.transpose(0, 1), None) for h in transformer_layers]
+                    
+                    # Match expected number of layers (self.nth_layer)
+                    num_available = len(all_outputs)
+                    if num_available < self.nth_layer:
+                        # Pad by duplicating last layer
+                        print(f"⚠️  HuBERT has {num_available} layers, padding to {self.nth_layer}")
+                        all_outputs = all_outputs + [all_outputs[-1]] * (self.nth_layer - num_available)
+                    elif num_available > self.nth_layer:
+                        # Trim to requested number
+                        all_outputs = all_outputs[:self.nth_layer]
+                    
+                    # Downsample padding mask to match feature dimensions
+                    if padding_mask is not None and padding_mask.any():
+                        embed_padding_mask = padding_mask[: , :: 320]
+                    else:
+                        embed_padding_mask = torch.zeros(
+                            wav.shape[0], 
+                            transformer_layers[0].shape[1], 
+                            dtype=torch.bool, 
+                            device=wav. device
+                        )
+                else:
+                    # WavLM path (original)
+                    (_, all_outputs), embed_padding_mask = (
+                        self.encoder. extract_features(
+                            source=wav,
+                            padding_mask=padding_mask,
+                            output_layer=self.nth_layer,
+                            ret_layer_results=True,
+                        )
                     )
-                )
-
             all_outputs = torch.stack([gg[0] for gg in all_outputs], dim=-1)  # T B C L
             preds = {}
             for name in self.axes_name:

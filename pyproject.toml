@@ -36,6 +36,7 @@ dependencies = [
   "numpy",
   "torch>=2.2.0",
   "torchaudio",
+  "transformers>=4.30.0",
   "tqdm",
   "submitit",
   "huggingface_hub",
