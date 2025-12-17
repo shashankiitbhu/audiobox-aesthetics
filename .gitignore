@@ -162,5 +162,4 @@ cython_debug/
 #  .idea/
 .vscode/
 .ruff_cache/checkpoints_voicebank/*. pt
-checkpoints_voicebank/*. pt
-checkpoints_voicebank/*.pt
+checkpoints_voicebank/
