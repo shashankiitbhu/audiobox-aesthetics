@@ -1,4 +1,4 @@
-```markdown
+
 # Fine-Tuning HuBERT for Speech Quality Assessment
 
 This project fine-tunes a HuBERT-based model for perceptual quality (PQ) prediction on the VoiceBank-DEMAND dataset, achieving state-of-the-art correlation with ground truth quality scores.
