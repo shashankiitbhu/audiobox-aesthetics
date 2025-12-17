@@ -163,3 +163,4 @@ cython_debug/
 .vscode/
 .ruff_cache/checkpoints_voicebank/*. pt
 checkpoints_voicebank/
+checkpoints/
